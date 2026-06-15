@@ -7,8 +7,8 @@ import pg from 'pg'
 const { Pool } = pg
 
 // 保留 SQLite 作為本地相容方案
-import { open } from 'sqlite'
-import sqlite3 from 'sqlite3'
+// import { open } from 'sqlite'
+// import sqlite3 from 'sqlite3'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -25,15 +25,15 @@ let isPostgres = false
 let pgPool = null // PostgreSQL 連線池
 let sqliteDb = null // SQLite 連線物件
 
-// 封裝統一的 query 方法，自動切換資料庫語法差異
+// 統一的資料庫操作接口
 const dbQuery = {
-  // 適用於 SELECT 撈取多筆資料
+  // 1. 查詢多筆
   all: async (sql, params = []) => {
     if (isPostgres) {
-      // 轉換 SQLite 的 ? 佔位符為 PostgreSQL 的 $1, $2
-      const pgSql = sql.replace(/\?/g, (_, index, str) => {
-        let count = 0
-        return str.slice(0, index).split('?').length
+      let count = 0
+      const pgSql = sql.replace(/\?/g, () => {
+        count++
+        return `$${count}` // 依序把問號替換成 $1, $2, $3...
       })
       const res = await pgPool.query(pgSql, params)
       return res.rows
@@ -41,22 +41,31 @@ const dbQuery = {
       return await sqliteDb.all(sql, params)
     }
   },
-  // 適用於 SELECT 撈取單筆資料
+
+  // 2. 查詢單筆
   get: async (sql, params = []) => {
     if (isPostgres) {
-      const pgSql = sql.replace(/\?/g, (_, index, str) => str.slice(0, index).split('?').length)
+      let count = 0
+      const pgSql = sql.replace(/\?/g, () => {
+        count++
+        return `$${count}`
+      })
       const res = await pgPool.query(pgSql, params)
       return res.rows[0] || null
     } else {
       return await sqliteDb.get(sql, params)
     }
   },
-  // 適用於 INSERT, UPDATE, DELETE
+
+  // 3. 執行修改/新增/刪除
   run: async (sql, params = []) => {
     if (isPostgres) {
-      let pgSql = sql.replace(/\?/g, (_, index, str) => str.slice(0, index).split('?').length)
+      let count = 0
+      let pgSql = sql.replace(/\?/g, () => {
+        count++
+        return `$${count}`
+      })
       
-      // 處理 SQLite lastID 的兼容性：如果是 INSERT，加上 RETURNING id
       const isInsert = pgSql.trim().toUpperCase().startsWith('INSERT')
       if (isInsert) {
         pgSql += ' RETURNING id'
@@ -71,6 +80,7 @@ const dbQuery = {
       return await sqliteDb.run(sql, params)
     }
   },
+
   // 執行純 SQL 腳本
   exec: async (sql) => {
     if (isPostgres) {
@@ -94,6 +104,10 @@ const dbQuery = {
   } else {
     console.log('--- 💻 未偵測到環境變數，啟用本地 SQLite 模式 ---')
     isPostgres = false
+
+    const { open } = await import('sqlite')
+    const sqlite3 = (await import('sqlite3')).default
+    
     sqliteDb = await open({
       filename: path.join(__dirname, 'database.db'),
       driver: sqlite3.Database,
